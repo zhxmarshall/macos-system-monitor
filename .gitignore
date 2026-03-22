@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# macOS
+.DS_Store
+*.dmg
+
+# Build output
+dist/
+build/
+
+# Runtime
+powermetrics_sample.txt
+monitor.py
+
+# Build artifacts (keep source icon.png, exclude generated .icns)
+AppIcon.icns
