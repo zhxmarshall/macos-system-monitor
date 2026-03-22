@@ -1,10 +1,5 @@
 # macOS System Monitor
 
-<p align="center">
-  <img src="screenshots/menubar.png" width="320" alt="Menu Bar Dropdown">
-  <img src="screenshots/dashboard.png" width="520" alt="Dashboard Window">
-</p>
-
 A lightweight macOS menu bar app for real-time system monitoring.
 Built for **Apple Silicon** (M1/M2/M3/M4), no sudo required.
 
