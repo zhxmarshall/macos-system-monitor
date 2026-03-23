@@ -5,7 +5,7 @@ macOS System Monitor — Menu Bar App
 支持 Apple Silicon，无需 sudo。
 """
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.1.1"
 APP_NAME = "System Monitor"
 APP_DEVELOPER = "Marshall Zheng"
 
@@ -25,6 +25,10 @@ I18N = {
         "description": "A lightweight macOS menu bar system monitor for Apple Silicon.",
         "temp_label": "Temperature",
         "power_label": "Power",
+        "theme": "Theme",
+        "theme_light": "Light",
+        "theme_dark": "Dark",
+        "theme_auto": "Auto",
     },
     "zh": {
         "show_dashboard": "打开面板",
@@ -40,6 +44,10 @@ I18N = {
         "description": "轻量级 macOS 菜单栏系统监控工具，专为 Apple Silicon 设计。",
         "temp_label": "温度",
         "power_label": "功耗",
+        "theme": "主题",
+        "theme_light": "浅色",
+        "theme_dark": "深色",
+        "theme_auto": "跟随系统",
     },
     "ja": {
         "show_dashboard": "ダッシュボード",
@@ -55,6 +63,10 @@ I18N = {
         "description": "Apple Silicon 向け軽量 macOS メニューバーシステムモニター。",
         "temp_label": "温度",
         "power_label": "電力",
+        "theme": "テーマ",
+        "theme_light": "ライト",
+        "theme_dark": "ダーク",
+        "theme_auto": "自動",
     },
 }
 LANG_NAMES = {"en": "English", "zh": "中文", "ja": "日本語"}
@@ -151,26 +163,53 @@ def fmt_speed(bps):
 # 自绘组件（轻量，不依赖 pyqtgraph）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# ── 配色方案 ──
+# ── 主题系统 ──
+_theme_setting = "auto"  # "light", "dark", "auto"
+
+def _system_is_dark():
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return result.stdout.strip().lower() == "dark"
+    except Exception:
+        return True
+
+def _is_dark_mode():
+    if _theme_setting == "dark":
+        return True
+    if _theme_setting == "light":
+        return False
+    return _system_is_dark()
+
+_DARK_MODE = _is_dark_mode()
+
+def _apply_theme():
+    """根据当前 _DARK_MODE 刷新 Theme 类所有属性。"""
+    dark = _DARK_MODE
+    if dark:
+        Theme.BG, Theme.BG_CARD = "#000000", "#0a0a0a"
+        Theme.TRACK, Theme.BORDER = "#1a1a1a", "#222222"
+        Theme.TEXT, Theme.TEXT_DIM, Theme.TEXT_BRIGHT = "#e0e0e0", "#777777", "#ffffff"
+        Theme.CPU, Theme.GPU, Theme.RAM = "#5bb8f5", "#7ecf8a", "#e8a855"
+        Theme.TEMP, Theme.POWER = "#e57373", "#cfb44a"
+        Theme.NET_DL, Theme.NET_UL = "#5ec4b0", "#d4845a"
+        Theme.BAR_LOW, Theme.BAR_MID, Theme.BAR_HIGH = "#5bb8f5", "#e8a855", "#e06060"
+    else:
+        Theme.BG, Theme.BG_CARD = "transparent", "rgba(0,0,0,0.06)"
+        Theme.TRACK, Theme.BORDER = "rgba(0,0,0,0.10)", "rgba(0,0,0,0.12)"
+        Theme.TEXT, Theme.TEXT_DIM, Theme.TEXT_BRIGHT = "#1c1c1e", "#6e6e73", "#000000"
+        Theme.CPU, Theme.GPU, Theme.RAM = "#2196F3", "#4CAF50", "#E67E22"
+        Theme.TEMP, Theme.POWER = "#E53935", "#F9A825"
+        Theme.NET_DL, Theme.NET_UL = "#00897B", "#D84315"
+        Theme.BAR_LOW, Theme.BAR_MID, Theme.BAR_HIGH = "#2196F3", "#E67E22", "#E53935"
+
 class Theme:
-    BG = "#1c1c2a"          # 深靛蓝背景
-    BG_CARD = "#232336"     # 卡片/区块背景
-    TRACK = "#2a2a40"       # 进度条底色
-    BORDER = "#2f2f48"      # 分割线
-    TEXT = "#c8cad0"         # 主文字
-    TEXT_DIM = "#6b6e7a"     # 次要文字
-    TEXT_BRIGHT = "#eaecf0"  # 高亮文字
-    CPU = "#5bb8f5"          # 柔和天蓝
-    GPU = "#7ecf8a"          # 柔和薄荷绿
-    RAM = "#e8a855"          # 暖琥珀
-    TEMP = "#e57373"         # 柔和珊瑚红
-    POWER = "#cfb44a"        # 暗金
-    NET_DL = "#5ec4b0"       # 青碧（下载）
-    NET_UL = "#d4845a"       # 赭橙（上传）
-    # 进度条渐变
-    BAR_LOW = "#5bb8f5"      # 正常
-    BAR_MID = "#e8a855"      # 中等
-    BAR_HIGH = "#e06060"     # 高负载
+    pass
+
+_apply_theme()
 
 
 class GaugeBar(QWidget):
@@ -323,10 +362,17 @@ class MonitorWidget(QWidget):
 
     # ── 构建界面 ──
 
+    def paintEvent(self, event):
+        if _DARK_MODE:
+            p = QPainter(self)
+            p.fillRect(self.rect(), QColor("#000000"))
+            p.end()
+        super().paintEvent(event)
+
     def _build_ui(self):
         self.setStyleSheet(
-            "QWidget { background: transparent; }"
-            f"QLabel  {{ color: {Theme.TEXT}; font-size: 12px; }}"
+            f"QWidget {{ background: transparent; }}"
+            f"QLabel  {{ color: {Theme.TEXT}; font-size: 12px; background: transparent; }}"
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 6)
@@ -663,13 +709,19 @@ class DashboardWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+W"), self, activated=self.close)
 
     def _apply_style(self):
+        if _DARK_MODE:
+            bg_main = "#000000"
+            bg_card = "#0a0a0a"
+        else:
+            bg_main = "#f0f0f0"
+            bg_card = "#ffffff"
         self.setStyleSheet(f"""
-            QMainWindow, QWidget {{ background-color: #000000; color: {Theme.TEXT}; }}
+            QMainWindow, QWidget {{ background-color: {bg_main}; color: {Theme.TEXT}; }}
             QGroupBox {{
                 border: 1px solid {Theme.BORDER}; border-radius: 8px;
                 margin-top: 12px; padding: 8px 8px 6px 8px;
                 font-size: 12px; font-weight: bold;
-                background-color: #0a0a0a;
+                background-color: {bg_card};
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin; left: 10px; padding: 0 4px;
@@ -848,7 +900,10 @@ class AboutWindow(QWidget):
             | Qt.WindowType.WindowCloseButtonHint
             | Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setStyleSheet(f"background-color: {Theme.BG};")
+        if _DARK_MODE:
+            self.setStyleSheet("background-color: #000000;")
+        else:
+            self.setStyleSheet("background-color: #f0f0f0;")
         self._build_ui()
 
     def _build_ui(self):
@@ -957,6 +1012,21 @@ class MonitorApp(QApplication):
 
     def __init__(self, argv):
         super().__init__(argv)
+        self.setStyle("Fusion")
+        if _DARK_MODE:
+            from PyQt6.QtGui import QPalette
+            pal = QPalette()
+            pal.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0))
+            pal.setColor(QPalette.ColorRole.WindowText, QColor(224, 224, 224))
+            pal.setColor(QPalette.ColorRole.Base, QColor(10, 10, 10))
+            pal.setColor(QPalette.ColorRole.AlternateBase, QColor(20, 20, 20))
+            pal.setColor(QPalette.ColorRole.Text, QColor(224, 224, 224))
+            pal.setColor(QPalette.ColorRole.Button, QColor(20, 20, 20))
+            pal.setColor(QPalette.ColorRole.ButtonText, QColor(224, 224, 224))
+            pal.setColor(QPalette.ColorRole.BrightText, QColor(255, 255, 255))
+            pal.setColor(QPalette.ColorRole.Highlight, QColor(60, 60, 60))
+            pal.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+            self.setPalette(pal)
         self.setQuitOnLastWindowClosed(False)
 
         self._last_icon_text = None
@@ -978,28 +1048,7 @@ class MonitorApp(QApplication):
         self._render_initial_icon()
 
         # 下拉菜单
-        self._menu_style = f"""
-            QMenu {{
-                background-color: {Theme.BG};
-                border: 1px solid {Theme.BORDER};
-                border-radius: 12px;
-                padding: 4px 0;
-            }}
-            QMenu::item {{
-                padding: 6px 16px;
-                color: {Theme.TEXT};
-                font-size: 12px;
-            }}
-            QMenu::item:selected {{
-                background: rgba(255, 255, 255, 0.06);
-                color: {Theme.TEXT_BRIGHT};
-            }}
-            QMenu::separator {{
-                height: 1px;
-                background: {Theme.BORDER};
-                margin: 3px 8px;
-            }}
-        """
+        self._menu_style = self._build_menu_style()
         self._menu = QMenu()
         self._menu.setStyleSheet(self._menu_style)
 
@@ -1033,6 +1082,17 @@ class MonitorApp(QApplication):
         self._pin_act.setChecked(False)
         self._pin_act.toggled.connect(self._dashboard._toggle_pin)
 
+        # 主题
+        self._theme_menu = QMenu()
+        self._theme_actions = {}
+        for key in ("light", "dark", "auto"):
+            act = self._theme_menu.addAction("")
+            act.setCheckable(True)
+            act.setChecked(key == _theme_setting)
+            act.triggered.connect(lambda checked, k=key: self._set_theme(k))
+            self._theme_actions[key] = act
+        self._menu.addMenu(self._theme_menu)
+
         # 语言
         self._lang_menu = QMenu()
         self._lang_actions = {}
@@ -1047,6 +1107,11 @@ class MonitorApp(QApplication):
         self._about_act = self._menu.addAction("", self._show_about)
         self._menu.addSeparator()
         self._quit_act = self._menu.addAction("", self._do_quit)
+
+        # 给所有子菜单也应用同一样式
+        for sub in (self._line1_menu, self._line2_menu,
+                     self._theme_menu, self._lang_menu):
+            sub.setStyleSheet(self._menu_style)
 
         # 设置所有文本
         self._update_menu_text()
@@ -1070,6 +1135,10 @@ class MonitorApp(QApplication):
         self._bot_actions[""].setText(_t("none"))
         self._login_act.setText(_t("start_login"))
         self._pin_act.setText(_t("pin_dashboard"))
+        self._theme_menu.setTitle(_t("theme"))
+        self._theme_actions["light"].setText(_t("theme_light"))
+        self._theme_actions["dark"].setText(_t("theme_dark"))
+        self._theme_actions["auto"].setText(_t("theme_auto"))
         self._lang_menu.setTitle(_t("language"))
         self._about_act.setText(_t("about"))
         self._quit_act.setText(_t("quit"))
@@ -1077,6 +1146,32 @@ class MonitorApp(QApplication):
             act.setChecked(code == _current_lang)
 
     # ── 菜单栏图标 ──
+
+    @staticmethod
+    def _build_menu_style():
+        sel_bg = "rgba(255,255,255,0.06)" if _DARK_MODE else "rgba(0,0,0,0.06)"
+        return f"""
+            QMenu {{
+                background-color: {'#000000' if _DARK_MODE else '#f5f5f5'};
+                border: 1px solid {Theme.BORDER};
+                border-radius: 12px;
+                padding: 4px 0;
+            }}
+            QMenu::item {{
+                padding: 6px 16px;
+                color: {Theme.TEXT};
+                font-size: 12px;
+            }}
+            QMenu::item:selected {{
+                background: {sel_bg};
+                color: {Theme.TEXT_BRIGHT};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {Theme.BORDER};
+                margin: 3px 8px;
+            }}
+        """
 
     def _render_initial_icon(self):
         text = "..."
@@ -1240,10 +1335,11 @@ class MonitorApp(QApplication):
     # ── 菜单栏显示配置 ──
 
     def _load_menubar_config(self):
-        global _current_lang
+        global _current_lang, _theme_setting, _DARK_MODE
         self._menubar_top = MENUBAR_DEFAULT_TOP
         self._menubar_bottom = MENUBAR_DEFAULT_BOTTOM
         _current_lang = DEFAULT_LANG
+        _theme_setting = "auto"
         try:
             if self._CONFIG_FILE.exists():
                 cfg = json.loads(self._CONFIG_FILE.read_text())
@@ -1252,8 +1348,13 @@ class MonitorApp(QApplication):
                 lang = cfg.get("lang", DEFAULT_LANG)
                 if lang in I18N:
                     _current_lang = lang
+                theme = cfg.get("theme", "auto")
+                if theme in ("light", "dark", "auto"):
+                    _theme_setting = theme
         except Exception:
             pass
+        _DARK_MODE = _is_dark_mode()
+        _apply_theme()
 
     def _save_config(self):
         self._CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -1261,6 +1362,7 @@ class MonitorApp(QApplication):
             "menubar_top": self._menubar_top,
             "menubar_bottom": self._menubar_bottom,
             "lang": _current_lang,
+            "theme": _theme_setting,
         }))
 
     def _build_menubar_submenus(self):
@@ -1289,6 +1391,13 @@ class MonitorApp(QApplication):
             act.triggered.connect(lambda checked, k=key: self._set_menubar_bottom(k))
             self._bot_actions[key] = act
         self._menu.addMenu(self._line2_menu)
+
+    def _set_theme(self, key):
+        global _theme_setting
+        _theme_setting = key
+        self._save_config()
+        # 重启应用以应用新主题（inline 样式无法热更新）
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def _set_language(self, code):
         global _current_lang
