@@ -45,7 +45,7 @@ Apple Silicon 向け軽量 macOS メニューバーシステムモニターア�
 
 #### Option 1: DMG Installer (Recommended)
 
-1. Download `SystemMonitor-1.0.2.dmg` from [Releases](https://github.com/zhxmarshall/macos-system-monitor/releases)
+1. Download `SystemMonitor-1.2.1.dmg` from [Releases](https://github.com/zhxmarshall/macos-system-monitor/releases)
 2. Double-click the DMG to open it
 3. Drag **System Monitor** into the **Applications** folder
 4. Launch from Launchpad or Spotlight (search "System Monitor")
@@ -135,7 +135,7 @@ Run: `xattr -cr '/Applications/System Monitor.app'` to remove the quarantine fla
 
 #### 方式一：DMG 安装包（推荐）
 
-1. 从 [Releases](https://github.com/zhxmarshall/macos-system-monitor/releases) 下载 `SystemMonitor-1.0.2.dmg`
+1. 从 [Releases](https://github.com/zhxmarshall/macos-system-monitor/releases) 下载 `SystemMonitor-1.2.1.dmg`
 2. 双击打开 DMG 文件
 3. 将 **System Monitor** 拖入 **Applications** 文件夹
 4. 从启动台或 Spotlight 搜索 "System Monitor" 启动
@@ -225,7 +225,7 @@ cd mac-system-monitor
 
 #### 方法 1：DMG インストーラー（推奨）
 
-1. [Releases](https://github.com/zhxmarshall/macos-system-monitor/releases) から `SystemMonitor-1.0.2.dmg` をダウンロード
+1. [Releases](https://github.com/zhxmarshall/macos-system-monitor/releases) から `SystemMonitor-1.2.1.dmg` をダウンロード
 2. DMG をダブルクリックして開く
 3. **System Monitor** を **Applications** フォルダにドラッグ
 4. Launchpad または Spotlight で "System Monitor" を検索して起動

@@ -284,6 +284,36 @@ def get_temperatures() -> dict:
     return result
 
 
+class TempReader:
+    """Read temperatures in background thread to avoid blocking main thread."""
+
+    def __init__(self, interval: float = 3.0):
+        self._interval = interval
+        self._lock = threading.Lock()
+        self._data = {"cpu_temp": None, "gpu_temp": None}
+        self._running = False
+
+    def start(self):
+        self._running = True
+        t = threading.Thread(target=self._loop, daemon=True)
+        t.start()
+
+    def stop(self):
+        self._running = False
+
+    @property
+    def latest(self) -> dict:
+        with self._lock:
+            return dict(self._data)
+
+    def _loop(self):
+        while self._running:
+            data = get_temperatures()
+            with self._lock:
+                self._data = data
+            time.sleep(self._interval)
+
+
 # ============================================================
 # Power via IOReport (no sudo)
 # ============================================================

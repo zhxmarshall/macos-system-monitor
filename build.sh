@@ -6,7 +6,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="System Monitor"
-VERSION="1.1.1"
+VERSION="1.2.1"
 DIST="$DIR/dist"
 APP="$DIST/$APP_NAME.app"
 CONTENTS="$APP/Contents"
@@ -65,18 +65,8 @@ if [ ! -f "$VENV/bin/python3" ]; then
     osascript -e 'display notification "Look for CPU% in menu bar ↗" with title "System Monitor" subtitle "Ready!"'
 fi
 
-# 运行 app，崩溃自动重启（最多 3 次）
-RETRIES=0
-while [ $RETRIES -lt 3 ]; do
-    "$VENV/bin/python3" "$RESOURCES/app.py" >>"$LOG" 2>&1
-    EXIT_CODE=$?
-    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 143 ] || [ $EXIT_CODE -eq 15 ]; then
-        break  # 正常退出或被 SIGTERM 终止
-    fi
-    RETRIES=$((RETRIES + 1))
-    echo "$(date): Crashed (exit=$EXIT_CODE), restart $RETRIES/3" >> "$LOG"
-    sleep 2
-done
+# 运行 app（不再自动重启，依赖单实例锁防多开）
+"$VENV/bin/python3" "$RESOURCES/app.py" >>"$LOG" 2>&1
 LAUNCHER
 chmod +x "$CONTENTS/MacOS/SystemMonitor"
 

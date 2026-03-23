@@ -5,7 +5,7 @@ macOS System Monitor — Menu Bar App
 支持 Apple Silicon，无需 sudo。
 """
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.1"
 APP_NAME = "System Monitor"
 APP_DEVELOPER = "Marshall Zheng"
 
@@ -100,7 +100,7 @@ def _fmt_speed_short(bps):
     return f"{bps / 1048576:.1f}M"
 
 import sys
-import os
+
 from pathlib import Path
 from collections import deque
 
@@ -134,7 +134,7 @@ from PyQt6.QtGui import (
 )
 import json
 
-from apple_metrics import get_temperatures, PowerReader, NetworkMonitor, GPUReader
+from apple_metrics import get_temperatures, PowerReader, NetworkMonitor, GPUReader, TempReader
 
 HIST = 60  # 60 秒历史
 
@@ -345,6 +345,7 @@ class MonitorWidget(QWidget):
         # 数据源
         self._pwr = PowerReader()
         self._gpu = GPUReader()
+        self._temp = TempReader(interval=3.0)  # 温度 3 秒读一次（IOHIDEvent 很慢）
         self._net = NetworkMonitor()
         psutil.cpu_percent()  # 初始化
 
@@ -355,6 +356,7 @@ class MonitorWidget(QWidget):
 
         self._pwr.start()
         self._gpu.start()
+        self._temp.start()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(1000)
@@ -362,17 +364,11 @@ class MonitorWidget(QWidget):
 
     # ── 构建界面 ──
 
-    def paintEvent(self, event):
-        if _DARK_MODE:
-            p = QPainter(self)
-            p.fillRect(self.rect(), QColor("#000000"))
-            p.end()
-        super().paintEvent(event)
-
     def _build_ui(self):
+        bg = "#000000" if _DARK_MODE else "transparent"
         self.setStyleSheet(
-            f"QWidget {{ background: transparent; }}"
-            f"QLabel  {{ color: {Theme.TEXT}; font-size: 12px; background: transparent; }}"
+            f"MonitorWidget {{ background-color: {bg}; }}"
+            f"QLabel {{ color: {Theme.TEXT}; font-size: 12px; background: transparent; }}"
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 6)
@@ -505,7 +501,7 @@ class MonitorWidget(QWidget):
         cpu = psutil.cpu_percent()
         gpu = self._gpu.latest  # 从背景线程读取，不阻塞
         vm = psutil.virtual_memory()
-        temps = get_temperatures()
+        temps = self._temp.latest  # 后台线程读取，不阻塞主线程
         pwr = self._pwr.latest
         net = self._net.get_speeds()
 
@@ -579,6 +575,7 @@ class MonitorWidget(QWidget):
     def stop(self):
         self._pwr.stop()
         self._gpu.stop()
+        self._temp.stop()
         self._timer.stop()
 
 
@@ -1012,27 +1009,15 @@ class MonitorApp(QApplication):
 
     def __init__(self, argv):
         super().__init__(argv)
-        self.setStyle("Fusion")
-        if _DARK_MODE:
-            from PyQt6.QtGui import QPalette
-            pal = QPalette()
-            pal.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0))
-            pal.setColor(QPalette.ColorRole.WindowText, QColor(224, 224, 224))
-            pal.setColor(QPalette.ColorRole.Base, QColor(10, 10, 10))
-            pal.setColor(QPalette.ColorRole.AlternateBase, QColor(20, 20, 20))
-            pal.setColor(QPalette.ColorRole.Text, QColor(224, 224, 224))
-            pal.setColor(QPalette.ColorRole.Button, QColor(20, 20, 20))
-            pal.setColor(QPalette.ColorRole.ButtonText, QColor(224, 224, 224))
-            pal.setColor(QPalette.ColorRole.BrightText, QColor(255, 255, 255))
-            pal.setColor(QPalette.ColorRole.Highlight, QColor(60, 60, 60))
-            pal.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
-            self.setPalette(pal)
+        # ⚠️ 必须先加载 config 才能确定主题，然后设置 NSAppearance
+        self._load_menubar_config()
+        self._apply_ns_appearance()
         self.setQuitOnLastWindowClosed(False)
 
         self._last_icon_text = None
         self._icon_font_single = QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold)
         self._icon_font_dual = QFont(".AppleSystemUIFont", 10, QFont.Weight.Bold)
-        self._load_menubar_config()
+        # config 已在 __init__ 中加载，无需重复
 
         self._widget = MonitorWidget()
         self._widget.cpu_updated.connect(self._update_icon)
@@ -1119,13 +1104,35 @@ class MonitorApp(QApplication):
         self._tray.setContextMenu(self._menu)
         self._tray.show()
 
+        # 菜单创建后再次强制 NSAppearance（确保 NSMenu 也受影响）
+        QTimer.singleShot(100, self._apply_ns_appearance)
+
         # 静默打开关闭一次菜单，完成首次 layout pass
         # 这样用户第一次真正打开时不会因为 sizeHint 不准而自动关闭
         QTimer.singleShot(500, self._warmup_menu)
 
+    def _apply_ns_appearance(self):
+        """设置 macOS 原生外观（影响 NSMenu 等原生控件）"""
+        try:
+            from AppKit import NSApplication, NSAppearance
+            if _DARK_MODE:
+                from AppKit import NSAppearanceNameDarkAqua
+                NSApplication.sharedApplication().setAppearance_(
+                    NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua)
+                )
+            else:
+                from AppKit import NSAppearanceNameAqua
+                NSApplication.sharedApplication().setAppearance_(
+                    NSAppearance.appearanceNamed_(NSAppearanceNameAqua)
+                )
+        except Exception:
+            pass
+
     def _warmup_menu(self):
-        self._menu.popup(QPoint(-9999, -9999))
-        QTimer.singleShot(50, self._menu.close)
+        """静默完成首次 layout，不弹出可见菜单。"""
+        self._widget.adjustSize()
+        self._widget.updateGeometry()
+        self._menu.adjustSize()
 
     def _update_menu_text(self):
         """更新所有菜单项文本（切换语言时调用）"""
@@ -1393,11 +1400,35 @@ class MonitorApp(QApplication):
         self._menu.addMenu(self._line2_menu)
 
     def _set_theme(self, key):
-        global _theme_setting
+        global _theme_setting, _DARK_MODE
         _theme_setting = key
+        _DARK_MODE = _is_dark_mode()
+        _apply_theme()
         self._save_config()
-        # 重启应用以应用新主题（inline 样式无法热更新）
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        # 实时更新 NSAppearance（影响原生菜单）
+        self._apply_ns_appearance()
+
+        # 更新 MonitorWidget 样式
+        self._widget.setStyleSheet(
+            f"QWidget {{ background: transparent; }}"
+            f"QLabel  {{ color: {Theme.TEXT}; font-size: 12px; background: transparent; }}"
+        )
+        self._widget.update()
+
+        # 更新 Dashboard 和 About 样式
+        self._dashboard._apply_style()
+        if _DARK_MODE:
+            self._about.setStyleSheet("background-color: #1c1c2a;")
+        else:
+            self._about.setStyleSheet("background-color: #f0f0f0;")
+
+        # 更新菜单选中状态
+        for k, act in self._theme_actions.items():
+            act.setChecked(k == key)
+
+        # 强制重绘 icon
+        self._last_icon_text = None
 
     def _set_language(self, code):
         global _current_lang
@@ -1487,8 +1518,18 @@ class MonitorApp(QApplication):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def main():
-    import signal
+    import signal, fcntl
     signal.signal(signal.SIGINT, signal.SIG_DFL)  # 允许 Ctrl+C 退出
+
+    # 单实例锁：防止多开
+    lock_path = Path.home() / "Library/Application Support/SystemMonitor/app.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        print("[System Monitor] Already running, exiting.", flush=True)
+        sys.exit(0)
 
     app = MonitorApp(sys.argv)
 
