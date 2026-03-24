@@ -5,7 +5,7 @@ macOS System Monitor — Menu Bar App
 支持 Apple Silicon，无需 sudo。
 """
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 APP_NAME = "System Monitor"
 APP_DEVELOPER = "Marshall Zheng"
 
@@ -25,10 +25,6 @@ I18N = {
         "description": "A lightweight macOS menu bar system monitor for Apple Silicon.",
         "temp_label": "Temperature",
         "power_label": "Power",
-        "theme": "Theme",
-        "theme_light": "Light",
-        "theme_dark": "Dark",
-        "theme_auto": "Auto",
     },
     "zh": {
         "show_dashboard": "打开面板",
@@ -44,10 +40,6 @@ I18N = {
         "description": "轻量级 macOS 菜单栏系统监控工具，专为 Apple Silicon 设计。",
         "temp_label": "温度",
         "power_label": "功耗",
-        "theme": "主题",
-        "theme_light": "浅色",
-        "theme_dark": "深色",
-        "theme_auto": "跟随系统",
     },
     "ja": {
         "show_dashboard": "ダッシュボード",
@@ -63,10 +55,6 @@ I18N = {
         "description": "Apple Silicon 向け軽量 macOS メニューバーシステムモニター。",
         "temp_label": "温度",
         "power_label": "電力",
-        "theme": "テーマ",
-        "theme_light": "ライト",
-        "theme_dark": "ダーク",
-        "theme_auto": "自動",
     },
 }
 LANG_NAMES = {"en": "English", "zh": "中文", "ja": "日本語"}
@@ -134,7 +122,9 @@ from PyQt6.QtGui import (
 )
 import json
 
-from apple_metrics import get_temperatures, PowerReader, NetworkMonitor, GPUReader, TempReader
+from apple_metrics import (
+    PowerReader, NetworkMonitor, GPUReader, TempReader, BatteryReader,
+)
 
 HIST = 60  # 60 秒历史
 
@@ -163,8 +153,7 @@ def fmt_speed(bps):
 # 自绘组件（轻量，不依赖 pyqtgraph）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# ── 主题系统 ──
-_theme_setting = "auto"  # "light", "dark", "auto"
+# ── 主题系统（纯跟随系统） ──
 
 def _system_is_dark():
     try:
@@ -175,16 +164,9 @@ def _system_is_dark():
         )
         return result.stdout.strip().lower() == "dark"
     except Exception:
-        return True
-
-def _is_dark_mode():
-    if _theme_setting == "dark":
-        return True
-    if _theme_setting == "light":
         return False
-    return _system_is_dark()
 
-_DARK_MODE = _is_dark_mode()
+_DARK_MODE = _system_is_dark()
 
 def _apply_theme():
     """根据当前 _DARK_MODE 刷新 Theme 类所有属性。"""
@@ -198,8 +180,8 @@ def _apply_theme():
         Theme.NET_DL, Theme.NET_UL = "#5ec4b0", "#d4845a"
         Theme.BAR_LOW, Theme.BAR_MID, Theme.BAR_HIGH = "#5bb8f5", "#e8a855", "#e06060"
     else:
-        Theme.BG, Theme.BG_CARD = "transparent", "rgba(0,0,0,0.06)"
-        Theme.TRACK, Theme.BORDER = "rgba(0,0,0,0.10)", "rgba(0,0,0,0.12)"
+        Theme.BG, Theme.BG_CARD = "transparent", "#f0f0f0"
+        Theme.TRACK, Theme.BORDER = "#e6e6e6", "#e0e0e0"
         Theme.TEXT, Theme.TEXT_DIM, Theme.TEXT_BRIGHT = "#1c1c1e", "#6e6e73", "#000000"
         Theme.CPU, Theme.GPU, Theme.RAM = "#2196F3", "#4CAF50", "#E67E22"
         Theme.TEMP, Theme.POWER = "#E53935", "#F9A825"
@@ -213,14 +195,17 @@ _apply_theme()
 
 
 class GaugeBar(QWidget):
-    """薄圆角进度条，颜色随百分比渐变。"""
+    """薄圆角进度条，颜色随百分比渐变。每次绘制实时读取 Theme 值。"""
 
     def __init__(self, height=6, color=None, parent=None):
         super().__init__(parent)
         self.setFixedHeight(height)
         self._v = 0
-        self._fixed_color = QColor(color) if color else None
-        self._track_color = QColor(Theme.TRACK)
+        self._fixed_color = color  # 保存颜色字符串，不缓存 QColor
+
+    def set_color(self, color):
+        self._fixed_color = color
+        self.update()
 
     def set_value(self, v):
         self._v = max(0, min(100, v))
@@ -232,14 +217,14 @@ class GaugeBar(QWidget):
         w, h = self.width(), self.height()
         r = h / 2
         p.setPen(Qt.PenStyle.NoPen)
-        # 底色
-        p.setBrush(self._track_color)
+        # 底色 — 每次实时读取 Theme.TRACK
+        p.setBrush(QColor(Theme.TRACK))
         p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
         # 填充
         fw = w * self._v / 100
         if fw > 0:
             if self._fixed_color:
-                p.setBrush(self._fixed_color)
+                p.setBrush(QColor(self._fixed_color))
             else:
                 c = Theme.BAR_LOW if self._v < 50 else (Theme.BAR_MID if self._v < 80 else Theme.BAR_HIGH)
                 p.setBrush(QColor(c))
@@ -250,12 +235,16 @@ class GaugeBar(QWidget):
 class SparkLine(QWidget):
     """迷你折线图，纯 QPainter 绘制。"""
 
-    def __init__(self, color=Theme.CPU, auto_max=False, parent=None):
+    def __init__(self, color=None, auto_max=False, parent=None):
         super().__init__(parent)
         self.setFixedHeight(26)
-        self._color = QColor(color)
+        self._color = QColor(color) if color else QColor(Theme.CPU)
         self._data = deque([0.0] * HIST, maxlen=HIST)
         self._auto = auto_max
+
+    def set_color(self, color):
+        self._color = QColor(color)
+        self.update()
 
     def append(self, v):
         self._data.append(v)
@@ -346,6 +335,7 @@ class MonitorWidget(QWidget):
         self._pwr = PowerReader()
         self._gpu = GPUReader()
         self._temp = TempReader(interval=3.0)  # 温度 3 秒读一次（IOHIDEvent 很慢）
+        self._bat = BatteryReader(interval=10.0)  # 电池 10 秒读一次
         self._net = NetworkMonitor()
         psutil.cpu_percent()  # 初始化
 
@@ -357,6 +347,7 @@ class MonitorWidget(QWidget):
         self._pwr.start()
         self._gpu.start()
         self._temp.start()
+        self._bat.start()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(1000)
@@ -365,50 +356,41 @@ class MonitorWidget(QWidget):
     # ── 构建界面 ──
 
     def _build_ui(self):
-        bg = "#000000" if _DARK_MODE else "transparent"
-        self.setStyleSheet(
-            f"MonitorWidget {{ background-color: {bg}; }}"
-            f"QLabel {{ color: {Theme.TEXT}; font-size: 12px; background: transparent; }}"
-        )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 6)
         lay.setSpacing(4)
 
         # 标题
-        title = QLabel("System Monitor")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(
-            f"font-size: 13px; font-weight: 600; color: {Theme.TEXT_BRIGHT};"
-            "letter-spacing: 1px; padding-bottom: 2px;"
-        )
-        lay.addWidget(title)
-        lay.addWidget(self._sep())
+        self._title = QLabel("System Monitor")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._title)
+        self._seps = []
+        s = self._sep(); self._seps.append(s); lay.addWidget(s)
 
         # CPU
-        r = self._metric_row("CPU", Theme.CPU)
-        self._cpu_bar, self._cpu_val = r["bar"], r["val"]
-        lay.addLayout(r["layout"])
-        self._cpu_spark = SparkLine(Theme.CPU)
+        self._cpu_row = self._metric_row("CPU")
+        self._cpu_bar, self._cpu_val, self._cpu_lbl = self._cpu_row["bar"], self._cpu_row["val"], self._cpu_row["lbl"]
+        lay.addLayout(self._cpu_row["layout"])
+        self._cpu_spark = SparkLine()
         lay.addWidget(self._cpu_spark)
 
         # GPU
-        r = self._metric_row("GPU", Theme.GPU)
-        self._gpu_bar, self._gpu_val = r["bar"], r["val"]
-        lay.addLayout(r["layout"])
-        self._gpu_spark = SparkLine(Theme.GPU)
+        self._gpu_row = self._metric_row("GPU")
+        self._gpu_bar, self._gpu_val, self._gpu_lbl = self._gpu_row["bar"], self._gpu_row["val"], self._gpu_row["lbl"]
+        lay.addLayout(self._gpu_row["layout"])
+        self._gpu_spark = SparkLine()
         lay.addWidget(self._gpu_spark)
 
-        lay.addWidget(self._sep())
+        s = self._sep(); self._seps.append(s); lay.addWidget(s)
 
         # RAM
-        r = self._metric_row("RAM", Theme.RAM)
-        self._ram_bar, self._ram_val = r["bar"], r["val"]
-        lay.addLayout(r["layout"])
+        self._ram_row = self._metric_row("RAM")
+        self._ram_bar, self._ram_val, self._ram_lbl = self._ram_row["bar"], self._ram_row["val"], self._ram_row["lbl"]
+        lay.addLayout(self._ram_row["layout"])
         self._ram_info = QLabel("")
-        self._ram_info.setStyleSheet(f"font-size: 10px; color: {Theme.TEXT_DIM}; margin-left: 38px;")
         lay.addWidget(self._ram_info)
 
-        lay.addWidget(self._sep())
+        s = self._sep(); self._seps.append(s); lay.addWidget(s)
 
         # 温度 + 功耗 — 卡片式排列
         tp_row = QHBoxLayout()
@@ -416,53 +398,42 @@ class MonitorWidget(QWidget):
         tp_row.setContentsMargins(0, 2, 0, 2)
 
         # 温度卡片
-        temp_card = QFrame()
-        temp_card.setStyleSheet(
-            f"background: {Theme.BG_CARD}; border-radius: 6px; padding: 4px 6px;"
-        )
-        tc_lay = QVBoxLayout(temp_card)
+        self._temp_card = QFrame()
+        tc_lay = QVBoxLayout(self._temp_card)
         tc_lay.setContentsMargins(6, 4, 6, 4)
         tc_lay.setSpacing(2)
-        tc_title = QLabel("TEMP")
-        tc_title.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {Theme.TEMP}; letter-spacing: 1px;")
-        tc_lay.addWidget(tc_title)
+        self._tc_title = QLabel("TEMP")
+        tc_lay.addWidget(self._tc_title)
         self._cpu_temp = QLabel("CPU --°C")
-        self._cpu_temp.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {Theme.TEXT_BRIGHT};")
         tc_lay.addWidget(self._cpu_temp)
         self._gpu_temp = QLabel("GPU --°C")
-        self._gpu_temp.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {Theme.TEXT_BRIGHT};")
         tc_lay.addWidget(self._gpu_temp)
-        tp_row.addWidget(temp_card, 1)
+        tp_row.addWidget(self._temp_card, 1)
 
         # 功耗卡片
-        pwr_card = QFrame()
-        pwr_card.setStyleSheet(
-            f"background: {Theme.BG_CARD}; border-radius: 6px; padding: 4px 6px;"
-        )
-        pc_lay = QVBoxLayout(pwr_card)
+        self._pwr_card = QFrame()
+        pc_lay = QVBoxLayout(self._pwr_card)
         pc_lay.setContentsMargins(6, 4, 6, 4)
         pc_lay.setSpacing(2)
-        pc_title = QLabel("POWER")
-        pc_title.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {Theme.POWER}; letter-spacing: 1px;")
-        pc_lay.addWidget(pc_title)
+        self._pc_title = QLabel("POWER")
+        pc_lay.addWidget(self._pc_title)
         self._pwr_total = QLabel("-- W")
-        self._pwr_total.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {Theme.TEXT_BRIGHT};")
         pc_lay.addWidget(self._pwr_total)
         self._pwr_detail = QLabel("CPU -- | GPU -- | DRAM --")
-        self._pwr_detail.setStyleSheet(f"font-size: 9px; color: {Theme.TEXT_DIM};")
         pc_lay.addWidget(self._pwr_detail)
-        tp_row.addWidget(pwr_card, 1)
+        self._charge_label = QLabel("")
+        self._charge_label.hide()
+        pc_lay.addWidget(self._charge_label)
+        tp_row.addWidget(self._pwr_card, 1)
 
         lay.addLayout(tp_row)
-        lay.addWidget(self._sep())
+        s = self._sep(); self._seps.append(s); lay.addWidget(s)
 
         # 网络
         net_row = QHBoxLayout()
         net_row.setContentsMargins(0, 0, 0, 0)
         self._net_dl = QLabel("↓ --")
-        self._net_dl.setStyleSheet(f"font-weight: bold; color: {Theme.NET_DL}; font-size: 12px;")
         self._net_ul = QLabel("↑ --")
-        self._net_ul.setStyleSheet(f"font-weight: bold; color: {Theme.NET_UL}; font-size: 12px;")
         net_row.addWidget(self._net_dl)
         net_row.addStretch()
         net_row.addWidget(self._net_ul)
@@ -471,28 +442,83 @@ class MonitorWidget(QWidget):
         self._net_spark = DualSparkLine()
         lay.addWidget(self._net_spark)
 
-    def _metric_row(self, name, color):
+        # 初始应用样式
+        self._refresh_styles()
+
+    def _metric_row(self, name):
         row = QHBoxLayout()
         row.setSpacing(8)
         lbl = QLabel(name)
         lbl.setFixedWidth(32)
-        lbl.setStyleSheet(f"font-weight: 600; color: {color}; font-size: 12px;")
-        bar = GaugeBar(color=color)
+        bar = GaugeBar()
         val = QLabel("--%")
         val.setFixedWidth(42)
         val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        val.setStyleSheet(f"font-weight: bold; color: {Theme.TEXT_BRIGHT}; font-size: 12px;")
         row.addWidget(lbl)
         row.addWidget(bar, 1)
         row.addWidget(val)
-        return {"layout": row, "bar": bar, "val": val}
+        return {"layout": row, "bar": bar, "val": val, "lbl": lbl}
 
     @staticmethod
     def _sep():
         f = QFrame()
-        f.setFrameShape(QFrame.Shape.HLine)
-        f.setStyleSheet(f"background: {Theme.BORDER}; max-height: 1px;")
+        f.setFrameShape(QFrame.Shape.NoFrame)
+        f.setFixedHeight(1)
+        f.setStyleSheet(f"background: {Theme.BORDER};")
         return f
+
+    def _refresh_styles(self):
+        """根据当前 Theme 刷新所有子 widget 的样式。"""
+        # 只设自身背景，不用 catch-all 选择器（避免覆盖子控件）
+        self.setStyleSheet("background: transparent;")
+
+        # 通用 label 样式
+        _lbl = f"font-size: 12px; color: {Theme.TEXT}; background: transparent;"
+
+        # 标题
+        self._title.setStyleSheet(
+            f"font-size: 14px; font-weight: bold; color: {Theme.TEXT_BRIGHT}; background: transparent;"
+        )
+        # CPU / GPU / RAM 标签
+        self._cpu_lbl.setStyleSheet(f"font-weight: bold; color: {Theme.CPU}; background: transparent;")
+        self._gpu_lbl.setStyleSheet(f"font-weight: bold; color: {Theme.GPU}; background: transparent;")
+        self._ram_lbl.setStyleSheet(f"font-weight: bold; color: {Theme.RAM}; background: transparent;")
+        # 数值
+        self._cpu_val.setStyleSheet(f"font-weight: bold; color: {Theme.TEXT_BRIGHT}; background: transparent;")
+        self._gpu_val.setStyleSheet(f"font-weight: bold; color: {Theme.TEXT_BRIGHT}; background: transparent;")
+        self._ram_val.setStyleSheet(f"font-weight: bold; color: {Theme.TEXT_BRIGHT}; background: transparent;")
+        # SparkLine 颜色
+        self._cpu_spark.set_color(Theme.CPU)
+        self._gpu_spark.set_color(Theme.GPU)
+        # GaugeBar 强制重绘（paintEvent 实时读 Theme）
+        self._cpu_bar.update()
+        self._gpu_bar.update()
+        self._ram_bar.update()
+        # RAM info
+        self._ram_info.setStyleSheet(f"font-size: 10px; color: {Theme.TEXT_DIM}; background: transparent;")
+        # 分割线
+        for s in self._seps:
+            s.setStyleSheet(f"background: {Theme.BORDER};")
+        # 温度 & 功耗卡片 — 用 objectName 限定 QFrame，不影响内部 QLabel
+        self._temp_card.setObjectName("card")
+        self._pwr_card.setObjectName("card")
+        card_style = (
+            f"QFrame#card {{ background: {Theme.BG_CARD}; border-radius: 6px;"
+            f" border: 1px solid {Theme.BORDER}; }}"
+            f" QFrame#card QLabel {{ background: transparent; }}"
+        )
+        self._temp_card.setStyleSheet(card_style)
+        self._pwr_card.setStyleSheet(card_style)
+        self._tc_title.setStyleSheet(f"font-weight: bold; font-size: 10px; color: {Theme.TEMP};")
+        self._pc_title.setStyleSheet(f"font-weight: bold; font-size: 10px; color: {Theme.POWER};")
+        self._cpu_temp.setStyleSheet(f"font-size: 12px; color: {Theme.TEXT_BRIGHT};")
+        self._gpu_temp.setStyleSheet(f"font-size: 12px; color: {Theme.TEXT_BRIGHT};")
+        self._pwr_total.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {Theme.TEXT_BRIGHT};")
+        self._pwr_detail.setStyleSheet(f"font-size: 10px; color: {Theme.TEXT_DIM};")
+        self._charge_label.setStyleSheet(f"font-size: 10px; color: {Theme.POWER};")
+        # 网络
+        self._net_dl.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {Theme.NET_DL}; background: transparent;")
+        self._net_ul.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {Theme.NET_UL}; background: transparent;")
 
     # ── 数据刷新 ──
 
@@ -561,6 +587,18 @@ class MonitorWidget(QWidget):
                 f"DRAM {pwr.get('dram_power', 0):.1f}"
             )
 
+        # 充电状态（后台线程 10 秒轮询）
+        bat = self._bat.latest
+        self._snapshot["battery"] = bat
+        if bat["charging"] and bat["charge_watts"] > 0:
+            self._charge_label.setText(f"⚡ {bat['charge_watts']:.1f}W ({bat['percent']}%)")
+            self._charge_label.show()
+        elif bat["plugged"]:
+            self._charge_label.setText(f"🔌 {bat['percent']}%")
+            self._charge_label.show()
+        else:
+            self._charge_label.hide()
+
         # 网络
         self._net_dl.setText(f"↓ {fmt_speed(net['download_speed'])}")
         self._net_ul.setText(f"↑ {fmt_speed(net['upload_speed'])}")
@@ -576,6 +614,7 @@ class MonitorWidget(QWidget):
         self._pwr.stop()
         self._gpu.stop()
         self._temp.stop()
+        self._bat.stop()
         self._timer.stop()
 
 
@@ -706,12 +745,8 @@ class DashboardWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+W"), self, activated=self.close)
 
     def _apply_style(self):
-        if _DARK_MODE:
-            bg_main = "#000000"
-            bg_card = "#0a0a0a"
-        else:
-            bg_main = "#f0f0f0"
-            bg_card = "#ffffff"
+        bg_main = Theme.BG if Theme.BG != "transparent" else ("#000000" if _DARK_MODE else "#f0f0f0")
+        bg_card = Theme.BG_CARD if Theme.BG_CARD != "transparent" else ("#0a0a0a" if _DARK_MODE else "#ffffff")
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{ background-color: {bg_main}; color: {Theme.TEXT}; }}
             QGroupBox {{
@@ -809,6 +844,7 @@ class DashboardWindow(QMainWindow):
             (1, 2, "GPU Power:", "d_gpu_pwr"),
             (2, 0, "DRAM:", "d_dram_pwr"),
             (2, 2, "Total:", "d_total_pwr"),
+            (3, 0, "Charging:", "d_charge_pwr"),
         ]
         for r, c, text, attr in items:
             lbl = QLabel(text)
@@ -1067,17 +1103,6 @@ class MonitorApp(QApplication):
         self._pin_act.setChecked(False)
         self._pin_act.toggled.connect(self._dashboard._toggle_pin)
 
-        # 主题
-        self._theme_menu = QMenu()
-        self._theme_actions = {}
-        for key in ("light", "dark", "auto"):
-            act = self._theme_menu.addAction("")
-            act.setCheckable(True)
-            act.setChecked(key == _theme_setting)
-            act.triggered.connect(lambda checked, k=key: self._set_theme(k))
-            self._theme_actions[key] = act
-        self._menu.addMenu(self._theme_menu)
-
         # 语言
         self._lang_menu = QMenu()
         self._lang_actions = {}
@@ -1094,8 +1119,7 @@ class MonitorApp(QApplication):
         self._quit_act = self._menu.addAction("", self._do_quit)
 
         # 给所有子菜单也应用同一样式
-        for sub in (self._line1_menu, self._line2_menu,
-                     self._theme_menu, self._lang_menu):
+        for sub in (self._line1_menu, self._line2_menu, self._lang_menu):
             sub.setStyleSheet(self._menu_style)
 
         # 设置所有文本
@@ -1129,10 +1153,13 @@ class MonitorApp(QApplication):
             pass
 
     def _warmup_menu(self):
-        """静默完成首次 layout，不弹出可见菜单。"""
+        """静默完成首次 layout，防止首次打开菜单时自动关闭。"""
         self._widget.adjustSize()
         self._widget.updateGeometry()
         self._menu.adjustSize()
+        # 在屏幕外弹出并立即关闭，强制 QMenu 完成首次 native layout pass
+        self._menu.popup(QPoint(-9999, -9999))
+        QTimer.singleShot(50, self._menu.close)
 
     def _update_menu_text(self):
         """更新所有菜单项文本（切换语言时调用）"""
@@ -1142,10 +1169,6 @@ class MonitorApp(QApplication):
         self._bot_actions[""].setText(_t("none"))
         self._login_act.setText(_t("start_login"))
         self._pin_act.setText(_t("pin_dashboard"))
-        self._theme_menu.setTitle(_t("theme"))
-        self._theme_actions["light"].setText(_t("theme_light"))
-        self._theme_actions["dark"].setText(_t("theme_dark"))
-        self._theme_actions["auto"].setText(_t("theme_auto"))
         self._lang_menu.setTitle(_t("language"))
         self._about_act.setText(_t("about"))
         self._quit_act.setText(_t("quit"))
@@ -1325,6 +1348,23 @@ class MonitorApp(QApplication):
             d.d_dram_pwr.setText(f"{pwr.get('dram_power', 0):.2f} W")
             d.d_total_pwr.setText(f"{pwr.get('total_power', 0):.2f} W")
 
+        # Charging — only update stylesheet when state changes
+        bat = s.get("battery", {})
+        if bat.get("charging") and bat.get("charge_watts", 0) > 0:
+            text = f"⚡ {bat['charge_watts']:.1f} W ({bat['percent']}%)"
+            color = "#4CAF50"
+        elif bat.get("plugged"):
+            text = f"🔌 {bat.get('percent', 0)}%"
+            color = Theme.TEXT_BRIGHT
+        else:
+            text = f"🔋 {bat.get('percent', 0)}%"
+            color = Theme.TEXT_BRIGHT
+        d.d_charge_pwr.setText(text)
+        new_style = f"font-weight: bold; color: {color}; font-size: 12px;"
+        if getattr(self, '_last_charge_style', None) != new_style:
+            d.d_charge_pwr.setStyleSheet(new_style)
+            self._last_charge_style = new_style
+
         # Network — reuse snapshot, no double get_speeds()
         net = s.get("net", {})
         if net:
@@ -1342,11 +1382,10 @@ class MonitorApp(QApplication):
     # ── 菜单栏显示配置 ──
 
     def _load_menubar_config(self):
-        global _current_lang, _theme_setting, _DARK_MODE
+        global _current_lang, _DARK_MODE
         self._menubar_top = MENUBAR_DEFAULT_TOP
         self._menubar_bottom = MENUBAR_DEFAULT_BOTTOM
         _current_lang = DEFAULT_LANG
-        _theme_setting = "auto"
         try:
             if self._CONFIG_FILE.exists():
                 cfg = json.loads(self._CONFIG_FILE.read_text())
@@ -1355,12 +1394,9 @@ class MonitorApp(QApplication):
                 lang = cfg.get("lang", DEFAULT_LANG)
                 if lang in I18N:
                     _current_lang = lang
-                theme = cfg.get("theme", "auto")
-                if theme in ("light", "dark", "auto"):
-                    _theme_setting = theme
         except Exception:
             pass
-        _DARK_MODE = _is_dark_mode()
+        _DARK_MODE = _system_is_dark()
         _apply_theme()
 
     def _save_config(self):
@@ -1369,7 +1405,6 @@ class MonitorApp(QApplication):
             "menubar_top": self._menubar_top,
             "menubar_bottom": self._menubar_bottom,
             "lang": _current_lang,
-            "theme": _theme_setting,
         }))
 
     def _build_menubar_submenus(self):
@@ -1398,37 +1433,6 @@ class MonitorApp(QApplication):
             act.triggered.connect(lambda checked, k=key: self._set_menubar_bottom(k))
             self._bot_actions[key] = act
         self._menu.addMenu(self._line2_menu)
-
-    def _set_theme(self, key):
-        global _theme_setting, _DARK_MODE
-        _theme_setting = key
-        _DARK_MODE = _is_dark_mode()
-        _apply_theme()
-        self._save_config()
-
-        # 实时更新 NSAppearance（影响原生菜单）
-        self._apply_ns_appearance()
-
-        # 更新 MonitorWidget 样式
-        self._widget.setStyleSheet(
-            f"QWidget {{ background: transparent; }}"
-            f"QLabel  {{ color: {Theme.TEXT}; font-size: 12px; background: transparent; }}"
-        )
-        self._widget.update()
-
-        # 更新 Dashboard 和 About 样式
-        self._dashboard._apply_style()
-        if _DARK_MODE:
-            self._about.setStyleSheet("background-color: #1c1c2a;")
-        else:
-            self._about.setStyleSheet("background-color: #f0f0f0;")
-
-        # 更新菜单选中状态
-        for k, act in self._theme_actions.items():
-            act.setChecked(k == key)
-
-        # 强制重绘 icon
-        self._last_icon_text = None
 
     def _set_language(self, code):
         global _current_lang

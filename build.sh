@@ -6,7 +6,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="System Monitor"
-VERSION="1.2.1"
+VERSION="1.3.0"
 DIST="$DIR/dist"
 APP="$DIST/$APP_NAME.app"
 CONTENTS="$APP/Contents"

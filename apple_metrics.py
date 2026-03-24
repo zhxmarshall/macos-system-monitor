@@ -109,34 +109,39 @@ def _poll_gpu_usage() -> dict:
         return {}
 
 
-class GPUReader:
-    """Read GPU usage in background thread to avoid blocking Qt main thread."""
+class PollingReader:
+    """Generic background-thread poller. Subclasses just set _poll_fn and _default."""
 
-    def __init__(self, interval: float = 1.0):
+    def __init__(self, poll_fn, default, interval: float):
+        self._poll_fn = poll_fn
         self._interval = interval
         self._lock = threading.Lock()
-        self._data = {}
+        self._data = default
         self._running = False
 
     def start(self):
         self._running = True
-        t = threading.Thread(target=self._loop, daemon=True)
-        t.start()
+        threading.Thread(target=self._loop, daemon=True).start()
 
     def stop(self):
         self._running = False
 
     @property
-    def latest(self) -> dict:
+    def latest(self):
         with self._lock:
-            return dict(self._data)
+            return dict(self._data) if isinstance(self._data, dict) else self._data
 
     def _loop(self):
         while self._running:
-            data = _poll_gpu_usage()
+            data = self._poll_fn()
             with self._lock:
                 self._data = data
             time.sleep(self._interval)
+
+
+class GPUReader(PollingReader):
+    def __init__(self, interval: float = 1.0):
+        super().__init__(_poll_gpu_usage, {}, interval)
 
 
 # Keep simple function for one-shot use
@@ -284,34 +289,9 @@ def get_temperatures() -> dict:
     return result
 
 
-class TempReader:
-    """Read temperatures in background thread to avoid blocking main thread."""
-
+class TempReader(PollingReader):
     def __init__(self, interval: float = 3.0):
-        self._interval = interval
-        self._lock = threading.Lock()
-        self._data = {"cpu_temp": None, "gpu_temp": None}
-        self._running = False
-
-    def start(self):
-        self._running = True
-        t = threading.Thread(target=self._loop, daemon=True)
-        t.start()
-
-    def stop(self):
-        self._running = False
-
-    @property
-    def latest(self) -> dict:
-        with self._lock:
-            return dict(self._data)
-
-    def _loop(self):
-        while self._running:
-            data = get_temperatures()
-            with self._lock:
-                self._data = data
-            time.sleep(self._interval)
+        super().__init__(get_temperatures, {"cpu_temp": None, "gpu_temp": None}, interval)
 
 
 # ============================================================
@@ -533,3 +513,43 @@ class NetworkMonitor:
             return f"{b / (1024 * 1024):.1f} MB"
         else:
             return f"{b / (1024 * 1024 * 1024):.2f} GB"
+
+
+# ============================================================
+# Battery / Charging Info
+# ============================================================
+
+def get_battery_info() -> dict:
+    """Read battery state via ioreg AppleSmartBattery.
+    Returns {"plugged": bool, "charging": bool, "percent": int, "charge_watts": float}
+    """
+    result = {"plugged": False, "charging": False, "percent": 0, "charge_watts": 0.0}
+    try:
+        proc = subprocess.run(
+            ["ioreg", "-rn", "AppleSmartBattery", "-a"],
+            capture_output=True, timeout=2,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            return result
+        entries = plistlib.loads(proc.stdout)
+        if not entries:
+            return result
+        e = entries[0]
+        result["plugged"] = bool(e.get("ExternalConnected", False))
+        result["charging"] = bool(e.get("IsCharging", False))
+        result["percent"] = int(e.get("CurrentCapacity", 0))
+        amp = e.get("Amperage", 0)   # mA (positive = charging)
+        volt = e.get("Voltage", 0)   # mV
+        if result["charging"] and amp > 0 and volt > 0:
+            result["charge_watts"] = abs(amp) * volt / 1_000_000
+    except Exception:
+        pass
+    return result
+
+
+class BatteryReader(PollingReader):
+    """Poll battery info every 10s in background (ioreg subprocess is slow)."""
+    def __init__(self, interval: float = 10.0):
+        super().__init__(get_battery_info,
+                         {"plugged": False, "charging": False, "percent": 0, "charge_watts": 0.0},
+                         interval)
