@@ -5,7 +5,7 @@ macOS System Monitor — Menu Bar App
 支持 Apple Silicon，无需 sudo。
 """
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 APP_NAME = "System Monitor"
 APP_DEVELOPER = "Marshall Zheng"
 
@@ -335,7 +335,7 @@ class MonitorWidget(QWidget):
         self._pwr = PowerReader()
         self._gpu = GPUReader()
         self._temp = TempReader(interval=3.0)  # 温度 3 秒读一次（IOHIDEvent 很慢）
-        self._bat = BatteryReader(interval=10.0)  # 电池 10 秒读一次
+        self._bat = BatteryReader(interval=3.0)  # 电池 3 秒读一次
         self._net = NetworkMonitor()
         psutil.cpu_percent()  # 初始化
 
@@ -392,13 +392,16 @@ class MonitorWidget(QWidget):
 
         s = self._sep(); self._seps.append(s); lay.addWidget(s)
 
-        # 温度 + 功耗 — 卡片式排列
+        # 温度 + 功耗 + 电池 — 三等分卡片
         tp_row = QHBoxLayout()
-        tp_row.setSpacing(6)
+        tp_row.setSpacing(4)
         tp_row.setContentsMargins(0, 2, 0, 2)
+        # 总宽 320 - 左右 margin 28 = 292, 减去 2×4 spacing = 284, 每卡 ~94
+        _card_w = 94
 
         # 温度卡片
         self._temp_card = QFrame()
+        self._temp_card.setFixedWidth(_card_w)
         tc_lay = QVBoxLayout(self._temp_card)
         tc_lay.setContentsMargins(6, 4, 6, 4)
         tc_lay.setSpacing(2)
@@ -408,10 +411,11 @@ class MonitorWidget(QWidget):
         tc_lay.addWidget(self._cpu_temp)
         self._gpu_temp = QLabel("GPU --°C")
         tc_lay.addWidget(self._gpu_temp)
-        tp_row.addWidget(self._temp_card, 1)
+        tp_row.addWidget(self._temp_card)
 
         # 功耗卡片
         self._pwr_card = QFrame()
+        self._pwr_card.setFixedWidth(_card_w)
         pc_lay = QVBoxLayout(self._pwr_card)
         pc_lay.setContentsMargins(6, 4, 6, 4)
         pc_lay.setSpacing(2)
@@ -419,12 +423,23 @@ class MonitorWidget(QWidget):
         pc_lay.addWidget(self._pc_title)
         self._pwr_total = QLabel("-- W")
         pc_lay.addWidget(self._pwr_total)
-        self._pwr_detail = QLabel("CPU -- | GPU -- | DRAM --")
+        self._pwr_detail = QLabel("CPU -- GPU --")
         pc_lay.addWidget(self._pwr_detail)
-        self._charge_label = QLabel("")
-        self._charge_label.hide()
-        pc_lay.addWidget(self._charge_label)
-        tp_row.addWidget(self._pwr_card, 1)
+        tp_row.addWidget(self._pwr_card)
+
+        # 电池卡片
+        self._bat_card = QFrame()
+        self._bat_card.setFixedWidth(_card_w)
+        bc_lay = QVBoxLayout(self._bat_card)
+        bc_lay.setContentsMargins(6, 4, 6, 4)
+        bc_lay.setSpacing(2)
+        self._bc_title = QLabel("BATTERY")
+        bc_lay.addWidget(self._bc_title)
+        self._charge_label = QLabel("--")
+        bc_lay.addWidget(self._charge_label)
+        self._bat_detail = QLabel("")
+        bc_lay.addWidget(self._bat_detail)
+        tp_row.addWidget(self._bat_card)
 
         lay.addLayout(tp_row)
         s = self._sep(); self._seps.append(s); lay.addWidget(s)
@@ -507,15 +522,19 @@ class MonitorWidget(QWidget):
             f" border: 1px solid {Theme.BORDER}; }}"
             f" QFrame#card QLabel {{ background: transparent; }}"
         )
+        self._bat_card.setObjectName("card")
         self._temp_card.setStyleSheet(card_style)
         self._pwr_card.setStyleSheet(card_style)
+        self._bat_card.setStyleSheet(card_style)
         self._tc_title.setStyleSheet(f"font-weight: bold; font-size: 10px; color: {Theme.TEMP};")
         self._pc_title.setStyleSheet(f"font-weight: bold; font-size: 10px; color: {Theme.POWER};")
+        self._bc_title.setStyleSheet(f"font-weight: bold; font-size: 10px; color: #4CAF50;")
         self._cpu_temp.setStyleSheet(f"font-size: 12px; color: {Theme.TEXT_BRIGHT};")
         self._gpu_temp.setStyleSheet(f"font-size: 12px; color: {Theme.TEXT_BRIGHT};")
         self._pwr_total.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {Theme.TEXT_BRIGHT};")
         self._pwr_detail.setStyleSheet(f"font-size: 10px; color: {Theme.TEXT_DIM};")
-        self._charge_label.setStyleSheet(f"font-size: 10px; color: {Theme.POWER};")
+        self._charge_label.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {Theme.TEXT_BRIGHT};")
+        self._bat_detail.setStyleSheet(f"font-size: 10px; color: {Theme.TEXT_DIM};")
         # 网络
         self._net_dl.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {Theme.NET_DL}; background: transparent;")
         self._net_ul.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {Theme.NET_UL}; background: transparent;")
@@ -581,23 +600,31 @@ class MonitorWidget(QWidget):
         # 功耗
         if pwr:
             self._pwr_total.setText(f"{pwr.get('total_power', 0):.1f} W")
-            self._pwr_detail.setText(
-                f"CPU {pwr.get('cpu_power', 0):.1f}  "
-                f"GPU {pwr.get('gpu_power', 0):.1f}  "
-                f"DRAM {pwr.get('dram_power', 0):.1f}"
-            )
+            cp = pwr.get('cpu_power', 0)
+            gp = pwr.get('gpu_power', 0)
+            self._pwr_detail.setText(f"C{cp:.1f} G{gp:.1f}")
 
-        # 充电状态（后台线程 10 秒轮询）
+        # 充电状态（后台线程 3 秒轮询）
         bat = self._bat.latest
         self._snapshot["battery"] = bat
-        if bat["charging"] and bat["charge_watts"] > 0:
-            self._charge_label.setText(f"⚡ {bat['charge_watts']:.1f}W ({bat['percent']}%)")
-            self._charge_label.show()
+        cycles = bat.get("cycle_count", 0)
+        pct = bat["percent"]
+        watts = bat["charge_watts"]
+        if bat["charging"] and watts > 0:
+            ttf = bat.get("time_to_full", 0)
+            if ttf > 0:
+                h, m = divmod(ttf, 60)
+                time_str = f"  {h}h{m:02d}m" if h else f"  {m}min"
+            else:
+                time_str = ""
+            self._charge_label.setText(f"⚡ {pct}%  {watts:.1f}W")
+            self._bat_detail.setText(f"Charging{time_str}")
         elif bat["plugged"]:
-            self._charge_label.setText(f"🔌 {bat['percent']}%")
-            self._charge_label.show()
+            self._charge_label.setText(f"🔌 {pct}%  0W")
+            self._bat_detail.setText(f"Plugged · {cycles} cycles")
         else:
-            self._charge_label.hide()
+            self._charge_label.setText(f"🔋 {pct}%")
+            self._bat_detail.setText(f"{cycles} cycles")
 
         # 网络
         self._net_dl.setText(f"↓ {fmt_speed(net['download_speed'])}")
@@ -1462,48 +1489,37 @@ class MonitorApp(QApplication):
         return Path.home() / "Library/LaunchAgents/com.local.systemmonitor.plist"
 
     def _is_login_enabled(self):
-        return self._launch_agent_path().exists()
+        import subprocess
+        try:
+            result = subprocess.run([
+                "osascript", "-e",
+                'tell application "System Events" to get the name of every login item'
+            ], capture_output=True, text=True, timeout=5)
+            return "System Monitor" in result.stdout
+        except Exception:
+            return self._launch_agent_path().exists()
 
     def _toggle_login(self, on):
-        plist_path = self._launch_agent_path()
+        import subprocess
+        # 检测 .app 路径
+        app_path = "/Applications/System Monitor.app"
+        for parent in Path(__file__).resolve().parents:
+            if parent.suffix == ".app":
+                app_path = str(parent)
+                break
         if on:
-            plist_path.parent.mkdir(parents=True, exist_ok=True)
-            # 检测是否从 .app 运行
-            app_bundle = None
-            for parent in Path(__file__).resolve().parents:
-                if parent.suffix == ".app":
-                    app_bundle = str(parent)
-                    break
-            if app_bundle:
-                prog_args = (
-                    '  <array>\n'
-                    '    <string>open</string>\n'
-                    f'    <string>{app_bundle}</string>\n'
-                    '  </array>\n'
-                )
-            else:
-                prog_args = (
-                    '  <array>\n'
-                    f'    <string>{sys.executable}</string>\n'
-                    f'    <string>{Path(__file__).resolve()}</string>\n'
-                    '  </array>\n'
-                )
-            content = (
-                '<?xml version="1.0" encoding="UTF-8"?>\n'
-                '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"\n'
-                '  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
-                '<plist version="1.0">\n<dict>\n'
-                '  <key>Label</key>\n'
-                '  <string>com.local.systemmonitor</string>\n'
-                '  <key>ProgramArguments</key>\n'
-                + prog_args +
-                '  <key>RunAtLoad</key>\n'
-                '  <true/>\n'
-                '</dict>\n</plist>\n'
-            )
-            plist_path.write_text(content)
+            subprocess.run([
+                "osascript", "-e",
+                f'tell application "System Events" to make login item at end '
+                f'with properties {{path:"{app_path}", hidden:false}}'
+            ], capture_output=True, timeout=5)
         else:
-            plist_path.unlink(missing_ok=True)
+            subprocess.run([
+                "osascript", "-e",
+                'tell application "System Events" to delete login item "System Monitor"'
+            ], capture_output=True, timeout=5)
+            # 同时清理旧的 LaunchAgent（如果有）
+            self._launch_agent_path().unlink(missing_ok=True)
 
     # ── 关于 ──
 

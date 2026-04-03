@@ -521,9 +521,13 @@ class NetworkMonitor:
 
 def get_battery_info() -> dict:
     """Read battery state via ioreg AppleSmartBattery.
-    Returns {"plugged": bool, "charging": bool, "percent": int, "charge_watts": float}
+    Returns dict with battery status and charging details.
     """
-    result = {"plugged": False, "charging": False, "percent": 0, "charge_watts": 0.0}
+    result = {
+        "plugged": False, "charging": False, "percent": 0,
+        "charge_watts": 0.0, "time_to_full": 0, "cycle_count": 0,
+        "bat_temp": 0.0, "amperage": 0, "voltage": 0,
+    }
     try:
         proc = subprocess.run(
             ["ioreg", "-rn", "AppleSmartBattery", "-a"],
@@ -538,18 +542,34 @@ def get_battery_info() -> dict:
         result["plugged"] = bool(e.get("ExternalConnected", False))
         result["charging"] = bool(e.get("IsCharging", False))
         result["percent"] = int(e.get("CurrentCapacity", 0))
+        result["cycle_count"] = int(e.get("CycleCount", 0))
+        # 电池温度（单位：℃ × 100）
+        raw_temp = e.get("Temperature", 0)
+        if raw_temp:
+            result["bat_temp"] = raw_temp / 100.0
         amp = e.get("Amperage", 0)   # mA (positive = charging)
         volt = e.get("Voltage", 0)   # mV
+        result["amperage"] = amp
+        result["voltage"] = volt
         if result["charging"] and amp > 0 and volt > 0:
             result["charge_watts"] = abs(amp) * volt / 1_000_000
+        # 预计充满时间（分钟），65535 表示无效
+        ttf = e.get("AvgTimeToFull", 65535)
+        if ttf and ttf < 65535:
+            result["time_to_full"] = int(ttf)
     except Exception:
         pass
     return result
 
 
+_BATTERY_DEFAULT = {
+    "plugged": False, "charging": False, "percent": 0,
+    "charge_watts": 0.0, "time_to_full": 0, "cycle_count": 0,
+    "bat_temp": 0.0, "amperage": 0, "voltage": 0,
+}
+
+
 class BatteryReader(PollingReader):
     """Poll battery info every 10s in background (ioreg subprocess is slow)."""
     def __init__(self, interval: float = 10.0):
-        super().__init__(get_battery_info,
-                         {"plugged": False, "charging": False, "percent": 0, "charge_watts": 0.0},
-                         interval)
+        super().__init__(get_battery_info, dict(_BATTERY_DEFAULT), interval)
