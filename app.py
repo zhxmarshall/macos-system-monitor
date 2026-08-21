@@ -5,7 +5,7 @@ macOS System Monitor — Menu Bar App
 支持 Apple Silicon，无需 sudo。
 """
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 APP_NAME = "System Monitor"
 APP_DEVELOPER = "Marshall Zheng"
 
@@ -108,6 +108,10 @@ for _venv_root in [
 import AppKit
 info = AppKit.NSBundle.mainBundle().infoDictionary()
 info["LSUIElement"] = "1"
+
+# macOS 27 打开菜单栏菜单会让 Qt 崩溃，必须在建托盘图标前打补丁
+from macos_compat import install_nsevent_clickcount_guard
+install_nsevent_clickcount_guard()
 
 import psutil
 from PyQt6.QtWidgets import (

@@ -1,12 +1,12 @@
 #!/bin/bash
 # 构建 macOS .app 应用包 + DMG 安装镜像
 # 用法: ./build.sh
-# 输出: dist/System Monitor.app + dist/SystemMonitor-2.1.0.dmg
+# 输出: dist/System Monitor.app + dist/SystemMonitor-<VERSION>.dmg
 
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="System Monitor"
-VERSION="1.3.1"
+VERSION="1.3.2"
 DIST="$DIR/dist"
 APP="$DIST/$APP_NAME.app"
 CONTENTS="$APP/Contents"
@@ -20,6 +20,7 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 # 拷贝源文件
 cp "$DIR/app.py" "$CONTENTS/Resources/"
 cp "$DIR/apple_metrics.py" "$CONTENTS/Resources/"
+cp "$DIR/macos_compat.py" "$CONTENTS/Resources/"
 cp "$DIR/requirements.txt" "$CONTENTS/Resources/"
 # 拷贝图标
 [ -f "$DIR/AppIcon.icns" ] && cp "$DIR/AppIcon.icns" "$CONTENTS/Resources/"

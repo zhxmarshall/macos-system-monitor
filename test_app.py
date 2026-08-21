@@ -354,6 +354,50 @@ class TestMonitorWidget(unittest.TestCase):
 
 
 # ============================================================
+# macos_compat 测试
+# ============================================================
+
+class TestClickCountGuard(unittest.TestCase):
+    """测试 -[NSEvent clickCount] 补丁（macOS 26+ 菜单栏崩溃修复）。"""
+
+    @staticmethod
+    def _app_defined_event():
+        import AppKit
+        return AppKit.NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+            15, AppKit.NSMakePoint(0, 0), 0, 0, 0, None, 0, 0, 0)
+
+    @staticmethod
+    def _mouse_down_event(click_count):
+        import AppKit
+        return AppKit.NSEvent.mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure_(
+            1, AppKit.NSMakePoint(0, 0), 0, 0, 0, None, 0, click_count, 1.0)
+
+    def test_install_succeeds(self):
+        from macos_compat import install_nsevent_clickcount_guard
+        self.assertTrue(install_nsevent_clickcount_guard())
+
+    def test_install_is_idempotent(self):
+        from macos_compat import install_nsevent_clickcount_guard
+        install_nsevent_clickcount_guard()
+        self.assertTrue(install_nsevent_clickcount_guard())
+
+    def test_non_mouse_event_returns_zero(self):
+        from macos_compat import install_nsevent_clickcount_guard
+        install_nsevent_clickcount_guard()
+        self.assertEqual(self._app_defined_event().clickCount(), 0)
+
+    def test_mouse_event_keeps_real_click_count(self):
+        from macos_compat import install_nsevent_clickcount_guard
+        install_nsevent_clickcount_guard()
+        for expected in (1, 2, 3):
+            self.assertEqual(self._mouse_down_event(expected).clickCount(), expected)
+
+    def test_app_installs_guard_on_import(self):
+        import app
+        self.assertEqual(self._app_defined_event().clickCount(), 0)
+
+
+# ============================================================
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
