@@ -6,7 +6,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="System Monitor"
-VERSION="1.3.2"
+VERSION="1.3.3"
 DIST="$DIR/dist"
 APP="$DIST/$APP_NAME.app"
 CONTENTS="$APP/Contents"
@@ -21,6 +21,7 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$DIR/app.py" "$CONTENTS/Resources/"
 cp "$DIR/apple_metrics.py" "$CONTENTS/Resources/"
 cp "$DIR/macos_compat.py" "$CONTENTS/Resources/"
+cp "$DIR/smc.py" "$CONTENTS/Resources/"
 cp "$DIR/requirements.txt" "$CONTENTS/Resources/"
 # 拷贝图标
 [ -f "$DIR/AppIcon.icns" ] && cp "$DIR/AppIcon.icns" "$CONTENTS/Resources/"

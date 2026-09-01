@@ -114,6 +114,119 @@ class TestPowerReader(unittest.TestCase):
         r = PowerReader()
         r.latest  # 不抛异常即可
 
+    def test_latest_has_all_fields(self):
+        from apple_metrics import PowerReader, _POWER_FIELDS
+        r = PowerReader()
+        for key in _POWER_FIELDS:
+            self.assertIn(key, r.latest)
+
+    def test_reports_live_power(self):
+        """macOS 27 上旧计数器冻结，总功耗必须走 SMC 而不是恒为 0。"""
+        from apple_metrics import PowerReader
+        r = PowerReader()
+        if not r.available:
+            self.skipTest("IOReport unavailable")
+        r.start()
+        try:
+            time.sleep(2.5)
+            data = r.latest
+        finally:
+            r.stop()
+        total = data["total_power"]
+        self.assertIsNotNone(total, "total_power 不该缺失")
+        self.assertGreater(total, 0.5, "整机功耗不可能低于 0.5W")
+        self.assertLess(total, 500, "整机功耗不该超过 500W")
+
+    def test_missing_domains_are_none_not_zero(self):
+        """拿不到的分项要返回 None（显示 --），不能返回 0 冒充真实读数。"""
+        from apple_metrics import PowerReader
+        r = PowerReader()
+        for key, value in r.latest.items():
+            self.assertTrue(value is None or isinstance(value, float), key)
+
+    def test_energy_unit_scale_covers_known_units(self):
+        from apple_metrics import _ENERGY_UNIT_SCALE
+        self.assertEqual(_ENERGY_UNIT_SCALE["mJ"], 1e-3)
+        self.assertEqual(_ENERGY_UNIT_SCALE["nJ"], 1e-9)
+
+
+class TestSMC(unittest.TestCase):
+    """SMC 是 macOS 27 上唯一还能拿到 CPU/整机功耗的来源。"""
+
+    def test_available(self):
+        import smc
+        self.assertTrue(smc.available())
+
+    def test_total_power_key_is_sane(self):
+        import smc
+        v = smc.read_float("PSTR")
+        self.assertIsNotNone(v)
+        self.assertGreater(v, 0.5)
+        self.assertLess(v, 500)
+
+    def test_unknown_key_returns_none(self):
+        import smc
+        self.assertIsNone(smc.read_float("ZZZZ"))
+
+    def test_bad_key_length_returns_none(self):
+        import smc
+        self.assertIsNone(smc.read_float("TOOLONG"))
+
+    def test_read_sum_skips_missing(self):
+        import smc
+        only_bad = smc.read_sum(("ZZZZ", "YYYY"))
+        self.assertIsNone(only_bad)
+        mixed = smc.read_sum(("PSTR", "ZZZZ"))
+        self.assertIsNotNone(mixed)
+
+
+class TestFmtWatts(unittest.TestCase):
+    def test_none_renders_dashes(self):
+        import app
+        self.assertEqual(app.fmt_watts(None), "-- W")
+        self.assertEqual(app.fmt_watts(None, 1, ""), "--")
+
+    def test_value_formatting(self):
+        import app
+        self.assertEqual(app.fmt_watts(12.345), "12.3 W")
+        self.assertEqual(app.fmt_watts(12.345, 2), "12.35 W")
+        self.assertEqual(app.fmt_watts(0.0), "0.0 W")
+
+
+class TestPhysicalNetCounters(unittest.TestCase):
+    """VPN 隧道会把物理网卡的流量再记一遍，必须排除。"""
+
+    def test_excludes_virtual_interfaces(self):
+        import psutil
+        from apple_metrics import _physical_net_counters
+        phys = _physical_net_counters()
+        everything = psutil.net_io_counters()
+        self.assertLessEqual(phys.bytes_recv, everything.bytes_recv)
+        self.assertLessEqual(phys.bytes_sent, everything.bytes_sent)
+
+    def test_loopback_and_tunnels_are_filtered(self):
+        from apple_metrics import _VIRTUAL_NIC_PREFIXES
+        for nic in ("lo0", "utun9", "awdl0", "bridge0", "gif0"):
+            self.assertTrue(nic.startswith(_VIRTUAL_NIC_PREFIXES), nic)
+        for nic in ("en0", "en1"):
+            self.assertFalse(nic.startswith(_VIRTUAL_NIC_PREFIXES), nic)
+
+
+class TestTemperatures(unittest.TestCase):
+    def test_gpu_temp_is_not_a_copy_of_cpu(self):
+        """以前没有 GPU 传感器时会直接复制 CPU 温度，是假数据。"""
+        from apple_metrics import get_temperatures
+        t = get_temperatures()
+        ct, gt = t.get("cpu_temp"), t.get("gpu_temp")
+        if ct is not None and gt is not None:
+            self.assertNotAlmostEqual(ct, gt, places=6)
+
+    def test_keys_present(self):
+        from apple_metrics import get_temperatures
+        t = get_temperatures()
+        self.assertIn("cpu_temp", t)
+        self.assertIn("gpu_temp", t)
+
 
 class TestNetworkMonitor(unittest.TestCase):
     def test_get_speeds(self):

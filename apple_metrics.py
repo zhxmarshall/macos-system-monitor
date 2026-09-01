@@ -7,6 +7,7 @@ Temperature:  IOHIDEventSystemClient thermal sensors
 Network:      psutil net_io_counters
 """
 
+import collections
 import ctypes
 import ctypes.util
 import plistlib
@@ -15,6 +16,8 @@ import threading
 import time
 
 import psutil
+
+import smc
 
 
 # ============================================================
@@ -276,8 +279,8 @@ def get_temperatures() -> dict:
             result["cpu_temp"] = sum(cpu_temps) / len(cpu_temps)
         if gpu_temps:
             result["gpu_temp"] = sum(gpu_temps) / len(gpu_temps)
-        elif cpu_temps:
-            result["gpu_temp"] = result["cpu_temp"]
+        # Apple Silicon 只有整片 SoC 的 tdie 传感器，没有独立 GPU 探头。
+        # 以前这里把 CPU 温度复制给 GPU，看着像真的其实是同一个数，现在留空。
 
     except Exception:
         pass
@@ -335,14 +338,28 @@ if _IOREPORT_AVAILABLE:
     _ioreport_lib.IOReportSimpleGetIntegerValue.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p,
     ]
+    _ioreport_lib.IOReportChannelGetUnitLabel.restype = ctypes.c_void_p
+    _ioreport_lib.IOReportChannelGetUnitLabel.argtypes = [ctypes.c_void_p]
 
 
+# macOS 27 冻结了旧的 mJ 计数器，新的能耗通道用 nJ 且改了名，两套都映射，
+# 谁在动就用谁。
 _POWER_CHANNELS = {
     "CPU Energy": "cpu_power",
     "GPU": "gpu_power",
+    "GPU Energy": "gpu_power",
     "DRAM": "dram_power",
     "ANE": "ane_power",
 }
+
+# 单位 -> 焦耳换算系数
+_ENERGY_UNIT_SCALE = {"J": 1.0, "mJ": 1e-3, "uJ": 1e-6, "nJ": 1e-9}
+
+# SMC 功率键（经负载实测确认）：PSTR = 整机总功耗，PPMC/PPSC = CPU 集群供电轨
+_SMC_TOTAL_KEY = "PSTR"
+_SMC_CPU_KEYS = ("PPMC", "PPSC")
+
+_POWER_FIELDS = ("cpu_power", "gpu_power", "dram_power", "ane_power", "total_power")
 
 # Pre-cached CFString for IOReport parsing
 _cfstr_ioreport_channels = _mk_cfstr("IOReportChannels") if _cf else None
@@ -354,7 +371,7 @@ class PowerReader:
     def __init__(self, interval: float = 1.0):
         self._interval = interval
         self._lock = threading.Lock()
-        self._data = {}
+        self._data = {k: None for k in _POWER_FIELDS}
         self._running = False
         self._thread = None
         self._stop_event = threading.Event()
@@ -410,6 +427,7 @@ class PowerReader:
         )
         if not prev:
             return
+        prev_t = time.monotonic()
         while self._running:
             self._stop_event.wait(timeout=self._interval)
             if not self._running:
@@ -419,36 +437,55 @@ class PowerReader:
             )
             if not curr:
                 continue
+            now = time.monotonic()
             delta = _ioreport_lib.IOReportCreateSamplesDelta(prev, curr, None)
             if delta:
+                data = self._parse(delta, max(now - prev_t, 1e-3))
                 with self._lock:
-                    self._data = self._parse(delta)
+                    self._data = data
                 _cf.CFRelease(delta)
             _cf.CFRelease(prev)
             prev = curr
+            prev_t = now
         if prev:
             _cf.CFRelease(prev)
 
-    def _parse(self, delta) -> dict:
-        result = {
-            "cpu_power": 0.0, "gpu_power": 0.0,
-            "dram_power": 0.0, "ane_power": 0.0, "total_power": 0.0,
-        }
+    def _parse(self, delta, elapsed: float) -> dict:
+        """把能耗增量换算成瓦特。拿不到的分项返回 None（显示为 --），不返回 0。"""
+        result = {k: None for k in _POWER_FIELDS}
         arr = _cf.CFDictionaryGetValue(delta, _cfstr_ioreport_channels)
-        if not arr:
-            return result
-        n = _cf.CFArrayGetCount(arr)
-        for i in range(n):
-            ch = _cf.CFArrayGetValueAtIndex(arr, i)
-            group = _cfstr_to_py(_ioreport_lib.IOReportChannelGetGroup(ch))
-            name = _cfstr_to_py(_ioreport_lib.IOReportChannelGetChannelName(ch))
-            if group != "Energy Model" or name not in _POWER_CHANNELS:
-                continue
-            raw = _ioreport_lib.IOReportSimpleGetIntegerValue(ch, None)
-            result[_POWER_CHANNELS[name]] = raw / 1000.0
-        result["total_power"] = sum(
-            result[k] for k in ("cpu_power", "gpu_power", "dram_power", "ane_power")
-        )
+        if arr:
+            for i in range(_cf.CFArrayGetCount(arr)):
+                ch = _cf.CFArrayGetValueAtIndex(arr, i)
+                if _cfstr_to_py(_ioreport_lib.IOReportChannelGetGroup(ch)) != "Energy Model":
+                    continue
+                name = _cfstr_to_py(_ioreport_lib.IOReportChannelGetChannelName(ch))
+                field = _POWER_CHANNELS.get(name)
+                if field is None:
+                    continue
+                unit = (_cfstr_to_py(
+                    _ioreport_lib.IOReportChannelGetUnitLabel(ch)) or "").strip()
+                scale = _ENERGY_UNIT_SCALE.get(unit)
+                if scale is None:
+                    continue
+                raw = _ioreport_lib.IOReportSimpleGetIntegerValue(ch, None)
+                if raw <= 0:
+                    continue  # 冻结或空的计数器，别把 0 当成真实读数
+                watts = raw * scale / elapsed
+                if result[field] is None or watts > result[field]:
+                    result[field] = watts
+
+        # macOS 27 上 CPU/DRAM/ANE 的 IOReport 计数器已停更，改用 SMC 供电轨
+        if result["cpu_power"] is None:
+            result["cpu_power"] = smc.read_sum(_SMC_CPU_KEYS)
+
+        total = smc.read_float(_SMC_TOTAL_KEY)
+        if total is None:
+            parts = [result[k] for k in ("cpu_power", "gpu_power",
+                                         "dram_power", "ane_power")]
+            known = [v for v in parts if v is not None]
+            total = sum(known) if known else None
+        result["total_power"] = total
         return result
 
 
@@ -456,11 +493,36 @@ class PowerReader:
 # Network I/O via psutil
 # ============================================================
 
+# 这些接口的流量会和物理网卡重复：VPN 隧道 (utun) 把同一批字节再记一遍，
+# 环回/网桥/AirDrop 也不该算进上网流量。
+_VIRTUAL_NIC_PREFIXES = ("lo", "utun", "ipsec", "ppp", "gif", "stf",
+                         "bridge", "awdl", "llw", "anpi", "ap")
+
+
+_NetCounters = collections.namedtuple("_NetCounters", "bytes_recv bytes_sent")
+
+
+def _physical_net_counters() -> "_NetCounters":
+    """只累加物理网卡，避免 VPN 隧道把流量算两遍。"""
+    recv = sent = 0
+    matched = False
+    for nic, c in psutil.net_io_counters(pernic=True).items():
+        if nic.startswith(_VIRTUAL_NIC_PREFIXES):
+            continue
+        matched = True
+        recv += c.bytes_recv
+        sent += c.bytes_sent
+    if not matched:
+        total = psutil.net_io_counters()
+        return _NetCounters(total.bytes_recv, total.bytes_sent)
+    return _NetCounters(recv, sent)
+
+
 class NetworkMonitor:
     """Track network upload/download speeds."""
 
     def __init__(self):
-        self._prev = psutil.net_io_counters()
+        self._prev = _physical_net_counters()
         self._prev_time = time.monotonic()
         self._last_result = {
             "download_speed": 0.0, "upload_speed": 0.0,
@@ -470,7 +532,7 @@ class NetworkMonitor:
     def get_speeds(self) -> dict:
         """Returns {"download_speed": bytes/s, "upload_speed": bytes/s, ...}"""
         now = time.monotonic()
-        curr = psutil.net_io_counters()
+        curr = _physical_net_counters()
         dt = now - self._prev_time
         if dt <= 0:
             dt = 1.0

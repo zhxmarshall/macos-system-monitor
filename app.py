@@ -5,7 +5,7 @@ macOS System Monitor — Menu Bar App
 支持 Apple Silicon，无需 sudo。
 """
 
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 APP_NAME = "System Monitor"
 APP_DEVELOPER = "Marshall Zheng"
 
@@ -67,12 +67,19 @@ def _t(key):
 _current_lang = DEFAULT_LANG
 
 # 菜单栏可选显示项（只显示数值，不显示标签前缀）
+def fmt_watts(value, digits=1, suffix=" W"):
+    """功耗可能取不到（macOS 27 停更了部分计数器），显示 -- 而不是假的 0。"""
+    if value is None:
+        return "--" + suffix
+    return f"{value:.{digits}f}{suffix}"
+
+
 MENUBAR_ITEMS = {
     "cpu": ("CPU %", lambda s: f"{s.get('cpu', 0):.0f}%"),
     "gpu": ("GPU %", lambda s: f"{s.get('gpu_pct', 0):.0f}%"),
     "ram": ("RAM %", lambda s: f"{s.get('ram_pct', 0):.0f}%"),
     "temp": ("Temperature", lambda s: f"{s.get('cpu_temp', 0):.0f}°" if s.get('cpu_temp') else "—°"),
-    "power": ("Power", lambda s: f"{s.get('total_power', 0):.1f}W"),
+    "power": ("Power", lambda s: fmt_watts(s.get('total_power'), 1, "W")),
     "net_ul": ("Net ↑", lambda s: f"↑{_fmt_speed_short(s.get('net_ul', 0))}"),
     "net_dl": ("Net ↓", lambda s: f"↓{_fmt_speed_short(s.get('net_dl', 0))}"),
 }
@@ -569,7 +576,7 @@ class MonitorWidget(QWidget):
             "used": used, "ram_pct": ram_pct,
             "temps": temps, "pwr": pwr, "net": net,
             "cpu_temp": temps.get("cpu_temp", 0),
-            "total_power": pwr.get("total_power", 0) if pwr else 0,
+            "total_power": pwr.get("total_power") if pwr else None,
             "net_dl": net.get("download_speed", 0),
             "net_ul": net.get("upload_speed", 0),
         }
@@ -603,10 +610,10 @@ class MonitorWidget(QWidget):
 
         # 功耗
         if pwr:
-            self._pwr_total.setText(f"{pwr.get('total_power', 0):.1f} W")
-            cp = pwr.get('cpu_power', 0)
-            gp = pwr.get('gpu_power', 0)
-            self._pwr_detail.setText(f"C{cp:.1f} G{gp:.1f}")
+            self._pwr_total.setText(fmt_watts(pwr.get('total_power')))
+            cp = fmt_watts(pwr.get('cpu_power'), 1, "")
+            gp = fmt_watts(pwr.get('gpu_power'), 1, "")
+            self._pwr_detail.setText(f"C{cp} G{gp}")
 
         # 充电状态（后台线程 3 秒轮询）
         bat = self._bat.latest
@@ -1374,10 +1381,10 @@ class MonitorApp(QApplication):
         # Power — reuse snapshot
         pwr = s.get("pwr", {})
         if pwr:
-            d.d_cpu_pwr.setText(f"{pwr.get('cpu_power', 0):.2f} W")
-            d.d_gpu_pwr.setText(f"{pwr.get('gpu_power', 0):.2f} W")
-            d.d_dram_pwr.setText(f"{pwr.get('dram_power', 0):.2f} W")
-            d.d_total_pwr.setText(f"{pwr.get('total_power', 0):.2f} W")
+            d.d_cpu_pwr.setText(fmt_watts(pwr.get('cpu_power'), 2))
+            d.d_gpu_pwr.setText(fmt_watts(pwr.get('gpu_power'), 2))
+            d.d_dram_pwr.setText(fmt_watts(pwr.get('dram_power'), 2))
+            d.d_total_pwr.setText(fmt_watts(pwr.get('total_power'), 2))
 
         # Charging — only update stylesheet when state changes
         bat = s.get("battery", {})
